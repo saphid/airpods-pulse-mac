@@ -2,9 +2,10 @@
 """
 airpods-pulse-mac daemon
 
-Watches PulseAudio for recording activity. When a remote client starts
-recording (source state → RUNNING), switches the Mac's audio input to the
-configured Bluetooth mic. When recording stops, restores the previous input.
+- Opens and maintains the reverse SSH tunnel to the remote server
+- Watches PulseAudio for recording activity
+- When recording starts (source → RUNNING), switches Mac input to the
+  configured Bluetooth mic; when it stops, restores the previous input
 
 Config: ~/.config/airpods-pulse-mac/config
 Log:    ~/Library/Logs/airpods-pulse-mac.log  (or stdout when run manually)
@@ -14,18 +15,20 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
 
 CONFIG_FILE = Path.home() / ".config/airpods-pulse-mac/config"
-LOG_FILE = Path.home() / "Library/Logs/airpods-pulse-mac.log"
 
 DEFAULTS = {
     "MIC_DEVICE": "",
+    "SERVER": "",
     "PACTL": "/usr/local/bin/pactl",
     "SWITCH_AUDIO": "/usr/local/bin/SwitchAudioSource",
     "RECONNECT_DELAY": "3",
+    "TUNNEL_RETRY_DELAY": "10",
 }
 
 
@@ -42,9 +45,38 @@ def load_config():
 
 def log(msg):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    line = f"{ts}  {msg}"
-    print(line, flush=True)
+    print(f"{ts}  {msg}", flush=True)
 
+
+# ── SSH tunnel ────────────────────────────────────────────────────────────────
+
+def run_tunnel(server, retry_delay):
+    """Keeps the reverse SSH tunnel alive. Runs in a background thread."""
+    ssh = "/usr/bin/ssh"
+    while True:
+        log(f"tunnel: connecting to {server}…")
+        proc = subprocess.Popen(
+            [ssh, "-N",
+             "-o", "ServerAliveInterval=30",
+             "-o", "ServerAliveCountMax=3",
+             "-o", "ExitOnForwardFailure=yes",
+             "-o", "BatchMode=yes",
+             "-R", "4713:127.0.0.1:4713",
+             server],
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        # Stream stderr so connection errors appear in the log
+        for line in proc.stderr:
+            line = line.rstrip()
+            if line:
+                log(f"tunnel: {line}")
+        rc = proc.wait()
+        log(f"tunnel: exited (rc={rc}), retrying in {retry_delay}s…")
+        time.sleep(retry_delay)
+
+
+# ── PulseAudio watcher ────────────────────────────────────────────────────────
 
 def source_states(pactl):
     r = subprocess.run([pactl, "list", "sources", "short"],
@@ -74,23 +106,7 @@ def set_input(switch_audio, device):
                    capture_output=True)
 
 
-def run(cfg):
-    pactl = cfg["PACTL"]
-    switch_audio = cfg["SWITCH_AUDIO"]
-    mic_device = cfg["MIC_DEVICE"]
-    reconnect_delay = int(cfg["RECONNECT_DELAY"])
-
-    if not mic_device:
-        log("ERROR: MIC_DEVICE not set in config. Run install.sh to configure.")
-        sys.exit(1)
-
-    for binary in [pactl, switch_audio]:
-        if not Path(binary).exists():
-            log(f"ERROR: {binary} not found. Run install.sh.")
-            sys.exit(1)
-
-    log(f"Starting — mic device: '{mic_device}'")
-
+def run_watcher(pactl, switch_audio, mic_device, reconnect_delay):
     saved_input = None
     was_recording = False
 
@@ -105,32 +121,63 @@ def run(cfg):
                 if recording and not was_recording:
                     saved_input = current_input(switch_audio)
                     set_input(switch_audio, mic_device)
-                    log(f"recording started — switched '{saved_input}' → '{mic_device}'")
+                    log(f"watcher: recording started — '{saved_input}' → '{mic_device}'")
                     was_recording = True
                 elif not recording and was_recording:
                     if saved_input:
                         set_input(switch_audio, saved_input)
-                        log(f"recording stopped — restored '{saved_input}'")
+                        log(f"watcher: recording stopped — restored '{saved_input}'")
                     was_recording = False
-
         except Exception as e:
-            log(f"pactl subscribe error: {e}")
+            log(f"watcher: error — {e}")
 
-        # pactl subscribe exited (PulseAudio restarted, etc.) — reconnect
         if was_recording and saved_input:
             set_input(switch_audio, saved_input)
             was_recording = False
-        log(f"PulseAudio disconnected, reconnecting in {reconnect_delay}s…")
+        log(f"watcher: PulseAudio disconnected, reconnecting in {reconnect_delay}s…")
         time.sleep(reconnect_delay)
 
+
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def handle_signal(signum, frame):
     log("Shutting down.")
     sys.exit(0)
 
 
-if __name__ == "__main__":
+def main():
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
+
     cfg = load_config()
-    run(cfg)
+    pactl = cfg["PACTL"]
+    switch_audio = cfg["SWITCH_AUDIO"]
+    mic_device = cfg["MIC_DEVICE"]
+    server = cfg["SERVER"]
+    reconnect_delay = int(cfg["RECONNECT_DELAY"])
+    tunnel_retry_delay = int(cfg["TUNNEL_RETRY_DELAY"])
+
+    if not mic_device:
+        log("ERROR: MIC_DEVICE not set in config — run install.sh")
+        sys.exit(1)
+
+    for binary in [pactl, switch_audio]:
+        if not Path(binary).exists():
+            log(f"ERROR: {binary} not found — run install.sh")
+            sys.exit(1)
+
+    log(f"Starting — mic: '{mic_device}', server: '{server or 'none (no tunnel)'}'")
+
+    if server:
+        t = threading.Thread(target=run_tunnel,
+                             args=(server, tunnel_retry_delay),
+                             daemon=True)
+        t.start()
+    else:
+        log("watcher: no SERVER configured, skipping tunnel (manage it manually)")
+
+    run_watcher(pactl, switch_audio, mic_device, reconnect_delay)
+
+
+if __name__ == "__main__":
+    main()

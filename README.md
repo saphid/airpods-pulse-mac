@@ -9,18 +9,18 @@ Automatically switch your Mac's audio input to AirPods (or any Bluetooth mic) wh
 ## How it works
 
 ```
-MacBook Air                          Remote server (lxso1)
-─────────────────                    ──────────────────────
-PulseAudio (TCP :4713) ◄─ SSH -R ─── Claude Code
-    │                                  (PULSE_SERVER=tcp:localhost:4713)
-    ▼
-daemon.py watches pactl subscribe
-    │
-    ├─ source → RUNNING  →  SwitchAudioSource → AirPods (mic on)
-    └─ source → SUSPENDED →  SwitchAudioSource → restore previous input
+MacBook Air                              Remote server
+─────────────────────────────            ──────────────────────
+daemon.py
+  ├─ thread: SSH reverse tunnel  ──────► port 4713 (PulseAudio TCP)
+  │   (auto-reconnects on drop)
+  │
+  └─ thread: pactl subscribe
+       ├─ source → RUNNING   →  SwitchAudioSource → AirPods (mic on)
+       └─ source → SUSPENDED →  SwitchAudioSource → restore previous input
 ```
 
-The daemon watches PulseAudio source state events. When the remote client begins recording, it switches your Mac's input to the configured Bluetooth mic. When recording ends, it restores whatever was the input before. No key interception or manual toggling required.
+A single background daemon manages both the SSH tunnel and the mic switching. When the remote client begins recording (PulseAudio source → RUNNING), it switches your Mac's input to the configured Bluetooth mic. When recording ends, it restores whatever was the input before. No key interception, no manual toggling, no second terminal.
 
 ---
 
@@ -61,37 +61,18 @@ export PULSE_SERVER=tcp:127.0.0.1:4713
 
 ## Usage
 
-**1. Open the SSH tunnel** (run on your Mac, keep the terminal open):
+After installation, the daemon runs automatically in the background and manages the tunnel. There's nothing to start manually.
+
+**SSH to your server and run Claude Code:**
 
 ```bash
-ssh -N -R 4713:127.0.0.1:4713 you@your-server
-```
-
-**2. Start Claude Code** on the remote server:
-
-```bash
+ssh you@your-server
 claude
 ```
 
-Voice mode (hold Space) will now record through your AirPods automatically.
+Hold Space to talk. The daemon opens the tunnel, watches for recording activity, and switches your mic to AirPods automatically.
 
 > **First-time Bluetooth setup:** Go to **System Settings → Sound → Input** and select your AirPods once. This establishes the HFP connection that macOS needs for mic use. The daemon handles switching from there. Note: macOS drops AirPods to phone-call audio quality while the mic is active — this is a Bluetooth limitation, not a bug.
-
----
-
-## Persistent tunnel (optional)
-
-To keep the tunnel alive automatically, add to your `~/.ssh/config`:
-
-```
-Host your-server
-    RemoteForward 4713 127.0.0.1:4713
-    ServerAliveInterval 30
-    ServerAliveCountMax 3
-    ExitOnForwardFailure yes
-```
-
-Then just `ssh your-server` as normal and the port is forwarded automatically.
 
 ---
 

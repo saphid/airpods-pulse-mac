@@ -5,6 +5,7 @@ set -euo pipefail
 
 LABEL="com.github.airpods-pulse-mac"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+LOG_FILE="$HOME/Library/Logs/airpods-pulse-mac.log"
 INSTALL_DIR="$HOME/.local/share/airpods-pulse-mac"
 CONFIG_DIR="$HOME/.config/airpods-pulse-mac"
 
@@ -27,7 +28,7 @@ echo
 read -rp "Remove config and logs too? [y/N] " CLEAN
 if [[ "$CLEAN" =~ ^[Yy]$ ]]; then
     rm -rf "$CONFIG_DIR"
-    rm -f "$HOME/Library/Logs/airpods-pulse-mac.log"
+    rm -f "$LOG_FILE"
     echo "  Removed config and logs"
 fi
 

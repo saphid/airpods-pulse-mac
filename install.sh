@@ -53,14 +53,12 @@ else
     info "PulseAudio service: running"
 fi
 
-# Wait for PulseAudio to be ready
 for i in $(seq 1 10); do
     if pactl info &>/dev/null 2>&1; then break; fi
     sleep 1
 done
 pactl info &>/dev/null 2>&1 || error "PulseAudio didn't start. Check: brew services list"
 
-# Make TCP module persistent across PulseAudio restarts
 PULSE_CONFIG_DIR="$HOME/.config/pulse"
 DEFAULT_PA="$PULSE_CONFIG_DIR/default.pa"
 mkdir -p "$PULSE_CONFIG_DIR"
@@ -68,7 +66,6 @@ mkdir -p "$PULSE_CONFIG_DIR"
 TCP_MODULE_LINE="load-module module-native-protocol-tcp port=4713 auth-ip-acl=127.0.0.1"
 
 if [[ ! -f "$DEFAULT_PA" ]]; then
-    # Bootstrap from system default and append our line
     SYSTEM_DEFAULT="/usr/local/etc/pulse/default.pa"
     if [[ -f "$SYSTEM_DEFAULT" ]]; then
         cp "$SYSTEM_DEFAULT" "$DEFAULT_PA"
@@ -87,7 +84,6 @@ else
     info "TCP module already in default.pa"
 fi
 
-# Load TCP module in the current session (if not already loaded)
 if ! pactl list modules short | grep -q module-native-protocol-tcp; then
     pactl load-module module-native-protocol-tcp port=4713 auth-ip-acl=127.0.0.1
     info "TCP module loaded (port 4713)"
@@ -104,9 +100,7 @@ while IFS= read -r line; do
     INPUTS+=("$line")
 done < <(SwitchAudioSource -a -t input)
 
-if [[ ${#INPUTS[@]} -eq 0 ]]; then
-    error "No audio input devices found."
-fi
+[[ ${#INPUTS[@]} -eq 0 ]] && error "No audio input devices found."
 
 echo "Available input devices:"
 for i in "${!INPUTS[@]}"; do
@@ -114,7 +108,6 @@ for i in "${!INPUTS[@]}"; do
 done
 echo
 
-# Pre-select if already configured
 CURRENT_MIC=""
 if [[ -f "$CONFIG_FILE" ]]; then
     CURRENT_MIC=$(grep "^MIC_DEVICE=" "$CONFIG_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"' || true)
@@ -123,8 +116,7 @@ fi
 if [[ -n "$CURRENT_MIC" ]]; then
     warn "Currently configured: '$CURRENT_MIC'"
     read -rp "Keep this device? [Y/n] " KEEP
-    KEEP=${KEEP:-y}
-    if [[ "$KEEP" =~ ^[Yy]$ ]]; then
+    if [[ "${KEEP:-y}" =~ ^[Yy]$ ]]; then
         MIC_DEVICE="$CURRENT_MIC"
     else
         CURRENT_MIC=""
@@ -142,6 +134,35 @@ fi
 
 info "Mic device: '$MIC_DEVICE'"
 
+# ── SSH server ────────────────────────────────────────────────────────────────
+
+section "SSH tunnel server"
+
+CURRENT_SERVER=""
+if [[ -f "$CONFIG_FILE" ]]; then
+    CURRENT_SERVER=$(grep "^SERVER=" "$CONFIG_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"' || true)
+fi
+
+if [[ -n "$CURRENT_SERVER" ]]; then
+    warn "Currently configured: '$CURRENT_SERVER'"
+    read -rp "Keep this server? [Y/n] " KEEP
+    if [[ "${KEEP:-y}" =~ ^[Yy]$ ]]; then
+        SERVER="$CURRENT_SERVER"
+    else
+        CURRENT_SERVER=""
+    fi
+fi
+
+if [[ -z "$CURRENT_SERVER" ]]; then
+    read -rp "SSH connection string (e.g. user@hostname), or Enter to skip: " SERVER
+fi
+
+if [[ -n "$SERVER" ]]; then
+    info "Server: '$SERVER'"
+else
+    warn "No server configured — tunnel will not be managed (set SERVER in config later)"
+fi
+
 # ── Write config ──────────────────────────────────────────────────────────────
 
 section "Writing config"
@@ -149,12 +170,15 @@ section "Writing config"
 mkdir -p "$CONFIG_DIR"
 cat > "$CONFIG_FILE" <<EOF
 # airpods-pulse-mac config
-# Edit this file then run: launchctl kickstart -k "gui/$(id -u)/$LABEL"
+# After editing, restart the agent:
+#   launchctl kickstart -k "gui/$(id -u)/$LABEL"
 
 MIC_DEVICE="$MIC_DEVICE"
+SERVER="$SERVER"
 PACTL="/usr/local/bin/pactl"
 SWITCH_AUDIO="/usr/local/bin/SwitchAudioSource"
 RECONNECT_DELAY="3"
+TUNNEL_RETRY_DELAY="10"
 EOF
 info "Config written to $CONFIG_FILE"
 
@@ -171,7 +195,6 @@ info "Daemon installed to $DAEMON"
 
 section "Installing LaunchAgent"
 
-# Detect PulseAudio socket path (includes hostname, changes per machine)
 PULSE_SOCKET=$(pactl info | awk '/^Server String:/{print $NF}')
 
 mkdir -p "$(dirname "$PLIST")"
@@ -198,6 +221,8 @@ cat > "$PLIST" <<EOF
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
     <key>StandardOutPath</key>
     <string>$LOG_FILE</string>
     <key>StandardErrorPath</key>
@@ -205,9 +230,7 @@ cat > "$PLIST" <<EOF
 </dict>
 </plist>
 EOF
-info "LaunchAgent plist written"
 
-# Unload existing (in case of reinstall) then load
 launchctl unload "$PLIST" 2>/dev/null || true
 launchctl load "$PLIST"
 info "LaunchAgent loaded"
@@ -216,18 +239,14 @@ info "LaunchAgent loaded"
 
 section "Done"
 
-TUNNEL_HOST="${SUDO_USER:-$(whoami)}@$(hostname)"
 echo
-echo "  ${BOLD}The daemon is running.${RESET} Check logs:"
-echo "    tail -f $LOG_FILE"
+echo "  The daemon is running and manages the SSH tunnel automatically."
+echo "  Logs: tail -f $LOG_FILE"
 echo
-echo "  ${BOLD}SSH tunnel command${RESET} (run on your Mac, keep open):"
-echo "    ${GREEN}ssh -N -R 4713:127.0.0.1:4713 saphid@<server-address>${RESET}"
-echo
-echo "  ${BOLD}On the remote server${RESET}, add to ~/.bashrc:"
+echo "  On the remote server, add to ~/.bashrc if not already present:"
 echo "    ${GREEN}export PULSE_SERVER=tcp:127.0.0.1:4713${RESET}"
 echo
-echo "  Then in Claude Code: voice mode will auto-switch to '${BOLD}$MIC_DEVICE${RESET}' when recording."
+echo "  Then ${BOLD}ssh $SERVER${RESET} and run ${BOLD}claude${RESET} — hold Space to talk."
 echo
 warn "First use: set AirPods as input in System Settings → Sound → Input to"
 warn "establish the Bluetooth HFP connection. The daemon handles it from there."
