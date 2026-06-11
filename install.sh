@@ -99,7 +99,10 @@ fi
 
 section "Selecting microphone"
 
-mapfile -t INPUTS < <(SwitchAudioSource -a -t input)
+INPUTS=()
+while IFS= read -r line; do
+    INPUTS+=("$line")
+done < <(SwitchAudioSource -a -t input)
 
 if [[ ${#INPUTS[@]} -eq 0 ]]; then
     error "No audio input devices found."
