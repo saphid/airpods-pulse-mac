@@ -72,7 +72,7 @@ claude
 
 Hold Space to talk. The daemon opens the tunnel, watches for recording activity, and switches your mic to AirPods automatically.
 
-> **First-time Bluetooth setup:** Go to **System Settings → Sound → Input** and select your AirPods once. This establishes the HFP connection that macOS needs for mic use. The daemon handles switching from there. Note: macOS drops AirPods to phone-call audio quality while the mic is active — this is a Bluetooth limitation, not a bug.
+> **Note:** macOS drops AirPods to phone-call audio quality while the mic is active — this is a Bluetooth limitation. The install script verifies the mic switch works; if it can't, it will tell you what to do.
 
 ---
 

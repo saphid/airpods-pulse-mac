@@ -134,6 +134,24 @@ fi
 
 info "Mic device: '$MIC_DEVICE'"
 
+# Verify the device can actually be activated (forces HFP negotiation)
+ORIGINAL_INPUT=$(SwitchAudioSource -t input -c)
+if [[ "$ORIGINAL_INPUT" != "$MIC_DEVICE" ]]; then
+    echo
+    info "Testing mic switch (this establishes the Bluetooth HFP connection)…"
+    SwitchAudioSource -t input -n "$MIC_DEVICE" 2>/dev/null || true
+    sleep 3
+    ACTUAL=$(SwitchAudioSource -t input -c)
+    if [[ "$ACTUAL" == "$MIC_DEVICE" ]]; then
+        info "Mic switch: ok — HFP connection established"
+        SwitchAudioSource -t input -n "$ORIGINAL_INPUT" 2>/dev/null || true
+    else
+        warn "Could not switch to '$MIC_DEVICE' automatically."
+        warn "One-time fix: open System Settings → Sound → Input and select '$MIC_DEVICE'."
+        warn "After that, the daemon handles all switching automatically."
+    fi
+fi
+
 # ── SSH server ────────────────────────────────────────────────────────────────
 
 section "SSH tunnel server"
@@ -248,6 +266,4 @@ echo "    ${GREEN}export PULSE_SERVER=tcp:127.0.0.1:4713${RESET}"
 echo
 echo "  Then ${BOLD}ssh $SERVER${RESET} and run ${BOLD}claude${RESET} — hold Space to talk."
 echo
-warn "First use: set AirPods as input in System Settings → Sound → Input to"
-warn "establish the Bluetooth HFP connection. The daemon handles it from there."
 echo

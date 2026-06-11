@@ -78,23 +78,6 @@ def run_tunnel(server, retry_delay):
 
 # ── PulseAudio watcher ────────────────────────────────────────────────────────
 
-def source_states(pactl):
-    r = subprocess.run([pactl, "list", "sources", "short"],
-                       capture_output=True, text=True)
-    states = {}
-    for line in r.stdout.splitlines():
-        parts = line.split("\t")
-        if len(parts) >= 5:
-            name, state = parts[1], parts[4]
-            if not name.endswith(".monitor"):
-                states[name] = state
-    return states
-
-
-def any_recording(pactl):
-    return any(s == "RUNNING" for s in source_states(pactl).values())
-
-
 def current_input(switch_audio):
     r = subprocess.run([switch_audio, "-t", "input", "-c"],
                        capture_output=True, text=True)
@@ -106,34 +89,53 @@ def set_input(switch_audio, device):
                    capture_output=True)
 
 
+def source_output_id(line):
+    """Extract numeric ID from 'Event '...' on source-output #N'"""
+    import re
+    m = re.search(r"source-output #(\d+)", line)
+    return m.group(1) if m else None
+
+
 def run_watcher(pactl, switch_audio, mic_device, reconnect_delay):
     saved_input = None
-    was_recording = False
+    open_streams = set()   # source-output IDs currently open
 
     while True:
         try:
             proc = subprocess.Popen([pactl, "subscribe"],
                                     stdout=subprocess.PIPE, text=True)
             for line in proc.stdout:
-                if "source" not in line:
+                if "source-output" not in line:
                     continue
-                recording = any_recording(pactl)
-                if recording and not was_recording:
-                    saved_input = current_input(switch_audio)
-                    set_input(switch_audio, mic_device)
-                    log(f"watcher: recording started — '{saved_input}' → '{mic_device}'")
-                    was_recording = True
-                elif not recording and was_recording:
-                    if saved_input:
+
+                sid = source_output_id(line)
+                if sid is None:
+                    continue
+
+                if "'new'" in line:
+                    if not open_streams:
+                        # First client opened a recording stream — switch now
+                        # so HFP has time to establish before audio flows.
+                        saved_input = current_input(switch_audio)
+                        set_input(switch_audio, mic_device)
+                        log(f"watcher: client connected — '{saved_input}' → '{mic_device}'")
+                    open_streams.add(sid)
+
+                elif "'remove'" in line:
+                    open_streams.discard(sid)
+                    if not open_streams and saved_input:
                         set_input(switch_audio, saved_input)
-                        log(f"watcher: recording stopped — restored '{saved_input}'")
-                    was_recording = False
+                        log(f"watcher: client disconnected — restored '{saved_input}'")
+                        saved_input = None
+
         except Exception as e:
             log(f"watcher: error — {e}")
 
-        if was_recording and saved_input:
+        # pactl subscribe exited — restore if mid-session
+        if open_streams and saved_input:
             set_input(switch_audio, saved_input)
-            was_recording = False
+        open_streams.clear()
+        saved_input = None
         log(f"watcher: PulseAudio disconnected, reconnecting in {reconnect_delay}s…")
         time.sleep(reconnect_delay)
 
