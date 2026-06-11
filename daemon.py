@@ -4,8 +4,8 @@ airpods-pulse-mac daemon
 
 - Opens and maintains the reverse SSH tunnel to the remote server
 - Watches PulseAudio for recording activity
-- When recording starts (source → RUNNING), switches Mac input to the
-  configured Bluetooth mic; when it stops, restores the previous input
+- Switches Mac input to the configured Bluetooth mic when a remote client
+  opens a recording stream, then restores it when the stream closes
 
 Config: ~/.config/airpods-pulse-mac/config
 Log:    ~/Library/Logs/airpods-pulse-mac.log  (or stdout when run manually)

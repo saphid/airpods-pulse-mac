@@ -16,11 +16,11 @@ daemon.py
   │   (auto-reconnects on drop)
   │
   └─ thread: pactl subscribe
-       ├─ source → RUNNING   →  SwitchAudioSource → AirPods (mic on)
-       └─ source → SUSPENDED →  SwitchAudioSource → restore previous input
+       ├─ source-output new    →  SwitchAudioSource → AirPods (mic on)
+       └─ source-output remove →  SwitchAudioSource → restore previous input
 ```
 
-A single background daemon manages both the SSH tunnel and the mic switching. When the remote client begins recording (PulseAudio source → RUNNING), it switches your Mac's input to the configured Bluetooth mic. When recording ends, it restores whatever was the input before. No key interception, no manual toggling, no second terminal.
+A single background daemon manages both the SSH tunnel and the mic switching. When the remote client opens a recording stream, it pre-switches your Mac's input to the configured Bluetooth mic — giving Bluetooth HFP time to negotiate before audio flows. When the stream closes, it restores whatever was the input before. No key interception, no manual toggling, no second terminal.
 
 ---
 
@@ -36,7 +36,7 @@ A single background daemon manages both the SSH tunnel and the mic switching. Wh
 ## Installation
 
 ```bash
-git clone https://github.com/yourusername/airpods-pulse-mac
+git clone https://github.com/saphid/airpods-pulse-mac
 cd airpods-pulse-mac
 bash install.sh
 ```
@@ -45,7 +45,8 @@ The installer will:
 1. Install `pulseaudio` and `switchaudio-osx` via Homebrew if needed
 2. Start PulseAudio and configure it to accept localhost TCP connections on port 4713
 3. Let you pick the audio input device to use for recording
-4. Install and start a background daemon (auto-restarts on login)
+4. Test that the mic switch works (establishes the Bluetooth HFP connection)
+5. Ask for your SSH server address and install a background daemon that manages everything
 
 ---
 
@@ -76,9 +77,9 @@ Hold Space to talk. The daemon opens the tunnel, watches for recording activity,
 
 ---
 
-## Changing the mic device
+## Changing the mic device or server
 
-Edit `~/.config/airpods-pulse-mac/config` and update `MIC_DEVICE`, then restart the daemon:
+Edit `~/.config/airpods-pulse-mac/config`, then restart the daemon:
 
 ```bash
 launchctl kickstart -k "gui/$(id -u)/com.github.airpods-pulse-mac"
@@ -110,13 +111,10 @@ bash uninstall.sh
 PulseAudio isn't installed or `/usr/local/bin` isn't in your PATH. Run `brew install pulseaudio`.
 
 **Daemon starts but mic doesn't switch**
-Check that the SSH tunnel is open (`ss -tnlp | grep 4713` on the server should show a listener) and that `PULSE_SERVER` is set in your shell.
-
-**"Connection refused" from server**
-The tunnel isn't running. Start it on your Mac: `ssh -N -R 4713:127.0.0.1:4713 you@server`.
+Check the log (`tail -f ~/Library/Logs/airpods-pulse-mac.log`). If the tunnel shows repeated connection failures, verify your SSH key works: `ssh -N -R 4713:127.0.0.1:4713 you@server`. If the tunnel connects but the mic doesn't switch, confirm `PULSE_SERVER=tcp:127.0.0.1:4713` is set in your shell on the server.
 
 **AirPods not in the device list**
-AirPods must be connected to the Mac and set as the input device in System Settings → Sound → Input at least once before the daemon can switch to them.
+AirPods must be connected to the Mac. Run `bash install.sh` again — the installer will detect them and test the switch.
 
 ---
 
